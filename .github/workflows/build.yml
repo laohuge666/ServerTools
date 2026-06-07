@@ -47,11 +47,10 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew shadowJar
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ServerTools
-          path: build/libs/ServerTools.jar
+      - name: Force delete old release to avoid caching
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete latest --cleanup-tag -y || true
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
