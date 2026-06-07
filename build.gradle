@@ -76,10 +76,6 @@ def configFields = [
     [name: 'TUNNEL_PORT',    key: 'tunnel.port',    type: 'int',     defaultValue: '8001'],
 ]
 
-def javaByteArray = { byte[] bytes ->
-    bytes.collect { b -> "(byte)${(int) b}" }.join(', ')
-}
-
 def encryptValue = { String value, byte[] key, SecureRandom random ->
     byte[] iv = new byte[12]
     random.nextBytes(iv)
@@ -108,10 +104,7 @@ tasks.register('generateEncryptedConfig') {
         SecureRandom random = new SecureRandom()
         byte[] key = new byte[32]
         random.nextBytes(key)
-
-        File outputDir = generatedConfigDir.get().asFile
-        outputDir.mkdirs()
-        File outputFile = new File(outputDir, 'EncryptedConfig.java')
+        String encodedKey = Base64.encoder.encodeToString(key)
 
         StringBuilder fields = new StringBuilder()
         configFields.each { field ->
@@ -130,6 +123,9 @@ tasks.register('generateEncryptedConfig') {
             }
         }
 
+        File outputDir = generatedConfigDir.get().asFile
+        outputDir.mkdirs()
+        File outputFile = new File(outputDir, 'EncryptedConfig.java')
         outputFile.text = """import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
@@ -138,9 +134,9 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 final class EncryptedConfig {
-${fields}
-    private static final byte[] KEY = new byte[]{${javaByteArray(key)}};
+    private static final byte[] KEY = Base64.getDecoder().decode("${encodedKey}");
 
+${fields}
     private EncryptedConfig() {
     }
 
