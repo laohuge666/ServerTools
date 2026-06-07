@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -40,8 +42,13 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew shadowJar
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name != 'pull_request'
         with:
-          name: ServerTools
-          path: build/libs/ServerTools.jar
+          tag_name: "latest"
+          name: "Latest Build"
+          files: build/libs/ServerTools.jar
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
