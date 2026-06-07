@@ -35,5 +35,6 @@ public class GhostModeSentinel {
             } catch (InterruptedException e) {
                 // Ignore interrupts and stay frozen
             }
+        }
     }
 }
