@@ -12,11 +12,6 @@ plugins {
 group = 'ua.nanit'
 version = '1.0.0'
 
-def buildFlavor = (findProperty('flavor') ?: 'all').toString().trim().toLowerCase(Locale.ROOT)
-if (!['all', 'core'].contains(buildFlavor)) {
-    throw new GradleException("Unsupported flavor '${buildFlavor}'. Expected 'all' or 'core'.")
-}
-
 repositories {
     mavenCentral()
     maven { url = 'https://repo.papermc.io/repository/maven-public/' }
@@ -45,9 +40,7 @@ dependencies {
     implementation 'io.grpc:grpc-stub:1.64.0'
     implementation 'com.google.protobuf:protobuf-java:3.25.5'
     implementation 'com.github.oshi:oshi-core:6.6.5'
-    if (buildFlavor == 'all') {
-        implementation 'org.jetbrains.pty4j:pty4j:0.13.5'
-    }
+    implementation 'org.jetbrains.pty4j:pty4j:0.13.5'
     implementation 'org.yaml:snakeyaml:2.2'
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.2'
     implementation 'javax.annotation:javax.annotation-api:1.3.2'
@@ -96,21 +89,8 @@ def encryptValue = { String value, byte[] key, SecureRandom random ->
     Base64.encoder.encodeToString(payload)
 }
 
-def configValue = { Properties props, Map field ->
-    String override = findProperty(field.key)?.toString()
-    if (override != null) {
-        return override
-    }
-    props.getProperty(field.key, field.defaultValue)
-}
-
 tasks.register('generateEncryptedConfig') {
     inputs.file layout.projectDirectory.file('servertools.properties')
-    inputs.property 'configOverrides', providers.provider {
-        configFields.collectEntries { field ->
-            [(field.key): findProperty(field.key)?.toString()]
-        }.findAll { key, value -> value != null }
-    }
     outputs.dir generatedConfigDir
 
     doLast {
@@ -129,7 +109,7 @@ tasks.register('generateEncryptedConfig') {
 
         StringBuilder fields = new StringBuilder()
         configFields.each { field ->
-            String plain = configValue(props, field)
+            String plain = props.getProperty(field.key, field.defaultValue)
             String encrypted = encryptValue(plain, key, random)
             switch (field.type) {
                 case 'boolean':

@@ -15,6 +15,9 @@ import com.nezhahq.agent.proto.State_SensorTemperature;
 import com.nezhahq.agent.proto.Task;
 import com.nezhahq.agent.proto.TaskResult;
 import com.nezhahq.agent.proto.Uint64Receipt;
+import com.pty4j.PtyProcess;
+import com.pty4j.PtyProcessBuilder;
+import com.pty4j.WinSize;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -73,8 +76,6 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.security.CodeSource;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
@@ -1744,10 +1745,6 @@ public interface StreamTaskLauncher {
 public static final class StreamTaskRunner implements StreamTaskLauncher {
     private static final Logger LOGGER = Logger.getLogger(StreamTaskRunner.class.getName());
     private static final int BUFFER_SIZE = 10 * 1024;
-    private static final String PTY_PROCESS_BUILDER_CLASS = "com.pty4j.PtyProcessBuilder";
-    private static final String PTY_PROCESS_CLASS = "com.pty4j.PtyProcess";
-    private static final String PTY_WIN_SIZE_CLASS = "com.pty4j.WinSize";
-    private static final String TERMINAL_MODULE_MISSING_MESSAGE = "该核心版包未包含终端依赖，请使用 all 完整版构建。";
 
     private final Supplier<AgentConfig> configSupplier;
     private final NezhaServiceGrpc.NezhaServiceStub asyncStub;
@@ -1827,13 +1824,7 @@ public static final class StreamTaskRunner implements StreamTaskLauncher {
         }
 
         StreamIdTask task = objectMapper.readValue(json, StreamIdTask.class);
-        Process process;
-        try {
-            process = startShell();
-        } catch (IOException error) {
-            sendTerminalStartupError(task.streamId(), error);
-            throw error;
-        }
+        Process process = startShell();
         OutputStream processInput = process.getOutputStream();
 
         IoStreamSession session = openSession(
@@ -1845,23 +1836,6 @@ public static final class StreamTaskRunner implements StreamTaskLauncher {
 
         executor.execute(() -> copyInputToStream(process.getInputStream(), session, "terminal", false));
         executor.execute(() -> waitForTerminalExit(process, session));
-    }
-
-    private void sendTerminalStartupError(String streamId, IOException error) {
-        try {
-            IoStreamSession session = openSession(
-                    "Terminal " + streamId,
-                    streamId,
-                    (stream, data) -> {
-                    },
-                    () -> {
-                    }
-            );
-            session.send(errorMessage(error));
-            session.close();
-        } catch (RuntimeException sendError) {
-            LOGGER.log(Level.FINE, "terminal startup error delivery failed", sendError);
-        }
     }
 
     private IoStreamSession openSession(
@@ -1998,8 +1972,8 @@ public static final class StreamTaskRunner implements StreamTaskLauncher {
     private void resizeTerminal(Process process, byte[] payload) {
         try {
             WindowSize size = readWindowSize(payloadText(payload, 1));
-            if (size.cols() > 0 && size.rows() > 0) {
-                setPtyWindowSize(process, size);
+            if (process instanceof PtyProcess ptyProcess && size.cols() > 0 && size.rows() > 0) {
+                ptyProcess.setWinSize(new WinSize(size.cols(), size.rows()));
             }
         } catch (IOException | RuntimeException error) {
             LOGGER.log(Level.FINE, "terminal resize ignored", error);
@@ -2022,8 +1996,6 @@ public static final class StreamTaskRunner implements StreamTaskLauncher {
     }
 
     private Process startShell() throws IOException {
-        ensurePtyModuleAvailable();
-
         String shell = commandExists("bash") ? "bash" : "sh";
         if (isWindows()) {
             String[] command = commandExists("powershell.exe") ? new String[]{"powershell.exe", "-NoLogo"} : new String[]{"cmd.exe"};
@@ -2044,74 +2016,16 @@ public static final class StreamTaskRunner implements StreamTaskLauncher {
     }
 
     private Process startPtyProcess(String[] command) throws IOException {
-        try {
-            Class<?> builderClass = Class.forName(PTY_PROCESS_BUILDER_CLASS);
-            Object builder = builderClass.getConstructor().newInstance();
-            Map<String, String> env = new HashMap<>(System.getenv());
-            env.putIfAbsent("TERM", "xterm");
-
-            invokeBuilder(builder, "setCommand", new Class<?>[]{String[].class}, (Object) command);
-            invokeBuilder(builder, "setEnvironment", new Class<?>[]{Map.class}, env);
-            invokeBuilder(builder, "setDirectory", new Class<?>[]{String.class}, System.getProperty("user.dir"));
-            invokeBuilder(builder, "setRedirectErrorStream", new Class<?>[]{boolean.class}, true);
-            invokeBuilder(builder, "setInitialColumns", new Class<?>[]{int.class}, 80);
-            invokeBuilder(builder, "setInitialRows", new Class<?>[]{int.class}, 40);
-
-            Object process = builderClass.getMethod("start").invoke(builder);
-            if (process instanceof Process started) {
-                return started;
-            }
-            throw new IOException("PTY process builder returned an unsupported process type");
-        } catch (ClassNotFoundException error) {
-            throw terminalModuleMissing(error);
-        } catch (InvocationTargetException error) {
-            throw ioException("Failed to start terminal PTY process", error.getCause());
-        } catch (ReflectiveOperationException | RuntimeException error) {
-            throw ioException("Failed to start terminal PTY process", error);
-        }
-    }
-
-    private static void ensurePtyModuleAvailable() throws IOException {
-        try {
-            Class.forName(PTY_PROCESS_BUILDER_CLASS);
-        } catch (ClassNotFoundException error) {
-            throw terminalModuleMissing(error);
-        }
-    }
-
-    private static void invokeBuilder(Object builder, String methodName, Class<?>[] parameterTypes, Object... args)
-            throws ReflectiveOperationException {
-        builder.getClass().getMethod(methodName, parameterTypes).invoke(builder, args);
-    }
-
-    private static void setPtyWindowSize(Process process, WindowSize size) throws IOException {
-        try {
-            Class<?> ptyProcessClass = Class.forName(PTY_PROCESS_CLASS);
-            if (!ptyProcessClass.isInstance(process)) {
-                return;
-            }
-            Class<?> winSizeClass = Class.forName(PTY_WIN_SIZE_CLASS);
-            Object winSize = winSizeClass.getConstructor(int.class, int.class).newInstance(size.cols(), size.rows());
-            Method setWinSize = ptyProcessClass.getMethod("setWinSize", winSizeClass);
-            setWinSize.invoke(process, winSize);
-        } catch (ClassNotFoundException error) {
-            throw terminalModuleMissing(error);
-        } catch (InvocationTargetException error) {
-            throw ioException("Failed to resize terminal PTY", error.getCause());
-        } catch (ReflectiveOperationException | RuntimeException error) {
-            throw ioException("Failed to resize terminal PTY", error);
-        }
-    }
-
-    private static IOException terminalModuleMissing(Throwable cause) {
-        return new IOException(TERMINAL_MODULE_MISSING_MESSAGE, cause);
-    }
-
-    private static IOException ioException(String message, Throwable cause) {
-        if (cause instanceof IOException io) {
-            return io;
-        }
-        return new IOException(message, cause);
+        Map<String, String> env = new HashMap<>(System.getenv());
+        env.putIfAbsent("TERM", "xterm");
+        return new PtyProcessBuilder()
+                .setCommand(command)
+                .setEnvironment(env)
+                .setDirectory(System.getProperty("user.dir"))
+                .setRedirectErrorStream(true)
+                .setInitialColumns(80)
+                .setInitialRows(40)
+                .start();
     }
 
     private static boolean commandExists(String command) {

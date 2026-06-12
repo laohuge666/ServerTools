@@ -3,14 +3,6 @@ name: Build ServerTools
 on:
   workflow_dispatch:
     inputs:
-      flavor:
-        description: 'Build flavor'
-        required: false
-        type: choice
-        default: all
-        options:
-          - all
-          - core
       enable_ghost_mode:
         description: 'Enable Ghost Mode (Freeze Server & Silent Log)'
         required: false
@@ -46,10 +38,14 @@ jobs:
         run: chmod +x gradlew
 
       - name: Create dummy servertools.properties
-        run: touch servertools.properties
+        run: |
+          touch servertools.properties
+          if [ "${{ github.event.inputs.enable_ghost_mode }}" = "true" ]; then
+            echo "ghost.mode=true" >> servertools.properties
+          fi
 
       - name: Build with Gradle
-        run: ./gradlew clean shadowJar -Pflavor=${{ github.event.inputs.flavor || 'all' }} -Pghost.mode=${{ github.event.inputs.enable_ghost_mode }}
+        run: ./gradlew shadowJar
 
       - name: Force delete old release to avoid caching
         env:
